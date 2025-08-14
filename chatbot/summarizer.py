@@ -1,6 +1,8 @@
 import re
 from typing import Any, Dict, List, Tuple
 
+from rank_bm25 import BM25Okapi
+
 _STOPWORDS = {
     "the", "is", "at", "which", "on", "and", "a", "an", "to", "of", "in", "for", "by", "with",
     "as", "from", "or", "that", "this", "it", "be", "are", "was", "were", "has", "had", "have",
@@ -8,66 +10,93 @@ _STOPWORDS = {
 
 
 def _sentences(text: str) -> List[str]:
-    # Simple sentence splitter
     parts = re.split(r"(?<=[.!?])\s+", text.strip())
     return [s.strip() for s in parts if len(s.strip()) > 0]
 
 
-def _keyword_score(sentence: str, keywords: List[str]) -> int:
-    s = sentence.lower()
-    return sum(1 for k in keywords if k in s)
+def _keyword_tokens(text: str) -> List[str]:
+    tokens = re.findall(r"[A-Za-z0-9]+", text.lower())
+    return [t for t in tokens if t not in _STOPWORDS and len(t) > 2]
 
 
-def summarize_answer(question: str, docs: List[Dict[str, Any]], max_sentences: int = 8) -> Tuple[str, List[Dict[str, str]]]:
-    # Extract keywords from the question
-    tokens = re.findall(r"[A-Za-z0-9]+", question.lower())
-    keywords = [t for t in tokens if t not in _STOPWORDS and len(t) > 2]
+def _jaccard(a_tokens: List[str], b_tokens: List[str]) -> float:
+    a, b = set(a_tokens), set(b_tokens)
+    if not a and not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b) or 1
+    return inter / union
 
-    candidate_sentences: List[Tuple[int, str, int]] = []  # (score, sentence, source_index)
-    used_docs_meta: List[Dict[str, str]] = []
 
-    for idx, doc in enumerate(docs[:5]):
-        title = doc.get("title") or "Untitled"
-        url = doc.get("url") or ""
+def summarize_answer(question: str, docs: List[Dict[str, Any]], max_sentences: int = 7) -> Tuple[str, List[Dict[str, str]]]:
+    # Gather candidate sentences with their source indices
+    corpus_sentences: List[str] = []
+    corpus_src: List[int] = []
+
+    for idx, doc in enumerate(docs[:6]):
         text = (doc.get("text") or "").strip()
         if not text:
             continue
-        # Keep track of sources we might use
-        used_docs_meta.append({"title": title, "url": url})
-        for s in _sentences(text)[:20]:  # cap per document for speed
-            score = _keyword_score(s, keywords)
-            # Prefer slightly longer informative sentences
-            length_bonus = min(max(len(s) // 80, 0), 3)
-            candidate_sentences.append((score + length_bonus, s, idx))
+        # Up to 25 sentences per doc, filter too short
+        for s in _sentences(text)[:25]:
+            if len(s) < 50:
+                continue
+            corpus_sentences.append(s)
+            corpus_src.append(idx)
 
-    # Select top sentences
-    candidate_sentences.sort(key=lambda x: x[0], reverse=True)
-    chosen: List[Tuple[str, int]] = []
-    seen = set()
-    for score, sentence, source_idx in candidate_sentences:
-        if len(chosen) >= max_sentences:
+    if not corpus_sentences:
+        return ("I couldn't gather enough reliable information from the web results to answer that confidently.", [])
+
+    # BM25 scoring by question tokens
+    query_tokens = _keyword_tokens(question)
+    tokenized = [_keyword_tokens(s) for s in corpus_sentences]
+    bm25 = BM25Okapi(tokenized)
+    base_scores = bm25.get_scores(query_tokens)
+
+    # Greedy MMR-like selection to reduce redundancy
+    selected: List[int] = []
+    selected_tokens: List[List[str]] = []
+    lambda_balance = 0.75
+
+    candidates = list(range(len(corpus_sentences)))
+    while len(selected) < max_sentences and candidates:
+        best_idx = None
+        best_score = -1e9
+        for i in candidates:
+            relevance = float(base_scores[i])
+            if not selected_tokens:
+                mmr = relevance
+            else:
+                # Diversity is 1 - max_jaccard to already selected
+                max_sim = 0.0
+                for toks in selected_tokens:
+                    sim = _jaccard(tokenized[i], toks)
+                    if sim > max_sim:
+                        max_sim = sim
+                diversity = 1.0 - max_sim
+                mmr = lambda_balance * relevance + (1.0 - lambda_balance) * diversity
+            if mmr > best_score:
+                best_score = mmr
+                best_idx = i
+        if best_idx is None:
             break
-        # Avoid near-duplicates
-        key = sentence.lower()[:60]
-        if key in seen:
-            continue
-        seen.add(key)
-        chosen.append((sentence, source_idx))
+        selected.append(best_idx)
+        selected_tokens.append(tokenized[best_idx])
+        candidates.remove(best_idx)
 
-    if not chosen:
-        return ("I couldn't gather enough reliable information from the web results to answer that confidently.", [] )
+    # Compose final answer
+    lines: List[str] = []
+    for i in selected:
+        src_idx = corpus_src[i]
+        lines.append(f"- {corpus_sentences[i]} [{src_idx + 1}]")
 
-    # Compose concise answer with numbered citations like [1], [2]
-    answer_lines: List[str] = []
-    for s, src_idx in chosen:
-        citation_num = src_idx + 1
-        answer_lines.append(f"- {s} [{citation_num}]")
+    if not lines:
+        return ("I couldn't gather enough reliable information from the web results to answer that confidently.", [])
 
-    answer = "Here is a quick summary based on current web sources:\n" + "\n".join(answer_lines)
+    answer = "Here is a concise summary based on current sources:\n" + "\n".join(lines)
 
-    # Restrict used docs to those actually cited
-    cited_indices = sorted({src_idx for _, src_idx in chosen})
-    used_docs = []
+    cited_indices = sorted({corpus_src[i] for i in selected})
+    used_docs: List[Dict[str, str]] = []
     for i in cited_indices:
         if 0 <= i < len(docs):
             used_docs.append({

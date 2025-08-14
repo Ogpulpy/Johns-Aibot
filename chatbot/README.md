@@ -1,13 +1,14 @@
 # Web-Enabled Chatbot
 
-A simple, interactive chatbot with quick web lookup using DuckDuckGo and content extraction. Optional OpenAI support if you provide `OPENAI_API_KEY`.
+A simple, fast chatbot with quick web lookup using multiple free sources, caching, and extractive summarization. Optional OpenAI support if you provide `OPENAI_API_KEY`.
 
 ## Features
-- Web search via DuckDuckGo (no API key required)
-- Fast content fetching and extraction
-- Extractive summarization fallback (no LLM required)
+- Web search via DuckDuckGo with HTML/Lite fallbacks (no API key required)
+- Extra sources: Wikipedia REST, Stack Overflow, MDN, GitHub repos (unauthenticated)
+- Disk cache for search results and fetched pages (speeds up repeats)
+- Extractive summarization with BM25 re-ranking + LexRank (no LLM required)
 - Optional LLM answers with inline citations if `OPENAI_API_KEY` is set
-- Minimal web UI
+- Minimal web UI with SSE progress streaming
 
 ## Setup
 ```bash
@@ -18,10 +19,9 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-(Optional) set your OpenAI key to enable LLM answers:
+(Optional) enable LLM answers:
 ```bash
 export OPENAI_API_KEY=your_key_here
-# Optional: choose a model (defaults to gpt-4o-mini)
 export OPENAI_MODEL=gpt-4o-mini
 ```
 
@@ -29,12 +29,13 @@ export OPENAI_MODEL=gpt-4o-mini
 ```bash
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
-Then open http://localhost:8000 in your browser.
+Open http://localhost:8000
 
-## How it works
-- The backend searches the web and fetches a handful of result pages, extracting clean text.
-- If OpenAI is configured, it crafts a short, cited answer. Otherwise, a lightweight extractive summary is returned with citations.
+## API
+- POST `/api/chat` body: `{ "message": "..." }` -> `{ reply, sources }`
+- GET `/api/chat/stream?message=...` SSE events: phases `searching`, `reading`, then `answer`
 
 ## Notes
-- Be mindful of source credibility; verify critical information.
-- Network access and website rate limits may affect speed and completeness.
+- Caching directory: `.cache` (override with `CHATBOT_CACHE_DIR`)
+- We use short timeouts and a global request budget for quick responses
+- Sources are deduplicated and prioritized for quality/freshness
