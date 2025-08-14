@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web Chatbot</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <h1>Web-Enabled Chatbot</h1>
+        <div class="sub">Searches the web to answer your questions.</div>
+      </header>
+
+      <main id="chat"></main>
+
+      <form id="composer">
+        <input id="input" type="text" placeholder="Ask me anything..." autocomplete="off" />
+        <button id="send" type="submit">Send</button>
+      </form>
+
+      <footer>
+        <span>Tip: Ask factual questions that benefit from web lookup.</span>
+      </footer>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>
